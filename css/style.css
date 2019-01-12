@@ -1,0 +1,214 @@
+html{
+    height: 100%;
+}
+body{
+    background-color: seashell ;
+    height: 100%;
+    margin: 0;
+    min-width: 600px;
+    overflow-y: hidden;
+}
+
+
+.title{
+    height: 4%;
+    text-align: center;
+    font-size: 2em;
+    color: chocolate;
+    font-weight: bold;
+}
+
+.gameRule{
+    width: 15%;
+    height: 88%;
+    /*padding-left: 1em;*/
+    /*min-width: 5em;*/
+    /*display: inline;*/
+   float: left;
+       
+}
+#ruleTitle{
+    height: 1em;;
+    padding: 1em;
+    font-weight: bold;
+    font-size: 1.2em;
+    text-align: center;
+
+}
+#gameRuleText{
+    height: 90%;
+    padding: 1em;
+    overflow: scroll;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+
+.gameConsole{
+    width: 15%;
+    height: 88%;
+    /*display: inline;*/
+        float: left;
+        /*padding: 0.1em;*/
+}
+#ConsoleTitle{
+    /*height: 10%;*/
+   height: 1em;
+    padding: 1em;
+    font-weight: bold;
+    font-size: 1.2em;
+    text-align: center;
+    
+}
+#gameConsoleText{
+    height: 90%;
+   /*height: auto;*/
+    overflow: scroll;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 1em;
+}
+
+
+
+.gamearea{
+    float: left;
+    /*display: inline;*/
+    text-align: center;
+    /*padding-top: 3em;
+    /*widows: 50%;*/
+    width: 70%;
+    height: 88%;
+    /*position: absolute;*/
+   padding: 0.2em;
+    
+}
+.gamearea tr{
+    /*height: 12%;*/
+   /*padding: 2em ;*/
+}
+
+.gamearea td{
+    /*background-image: url(../img/cover.png);*/
+    /*width: 100px;
+    height: 135px;*/
+    /*width: 8%;*/
+    /*height: 10%;*/
+    /*min-width: 4em;
+    min-height: 6em;*/
+    /*width:auto*/
+    border: 2px solid #354443;
+    border-radius: 4px;
+    box-shadow: 4px 4px 8px #354443;
+    min-width: 2em;
+    width: 11.1%;
+    /*background-color:gainsboro*/
+    /*transition: all 0.5s;*/
+    /*transition: all 2s,color all 4s;*/
+        
+    /*flex: auto;*/
+}
+.clickAnimation{
+transition: transform 1.7s;
+   transform: rotateY(360deg);
+}
+.gamearea td:hover{
+    background-color:green; 
+    /*transition: transform 2s;
+   transform: rotateY(360deg);*/
+}
+/*.gamearea td:active{
+           transition: transform 2s;
+   transform: rotateY(360deg);
+}*/
+
+.gameScore{
+    float: left;
+    width: 100%;
+    height: 8%;
+    text-align: center;
+}
+.control{
+    padding: 0.5em 0.1em 0 0.1em;
+}
+#gameStartButton{
+    text-align: center;
+    /*height: 100%;*/
+    width: 5em;
+    font-size: 2em;
+    background-color: #4CAF50;
+    color: #FFFFFF;
+    border: none;
+    padding: 0.2em;
+    border: none;
+    border-radius: 0.5em;
+    box-shadow: 0 8px #999;
+}
+#gameStartButton:hover {
+    background-color: #3e8e41;
+
+}
+#gameStartButton:active{
+    background-color: #3e8e41;
+    box-shadow: 0 4px  #666;
+    transform: translateY(4px);
+}
+.startDiv{
+    width: 70%;
+    text-align: center;
+    float: left;
+}
+.updateDiv{
+    width: 15%;
+    float: left;
+}
+#updateLog{
+    
+    float: left;
+    
+}
+/*#gameResetButton{
+    text-align: center;
+    height: 20%;
+    width: 5em;
+    font-size: 2em;
+    background-color: #4CAF50;
+    color: #FFFFFF;
+    border: none;
+    padding: 0.2em;
+    border: none;
+    border-radius: 0.5em;
+    box-shadow: 0 9px #999;
+}
+#gameResetButton:hover {
+    background-color: #3e8e41;
+}
+#gameResetButton:active{
+    background-color: #3e8e41;
+    box-shadow: 0 5px #666;
+    transform: translateY(4px);
+
+}*/
+
+/*.gameSDIV{
+    height: 80%;
+}
+.Camp1{
+    float: left;
+    width: 50%;
+    height: 100%;
+}
+.Camp1 button{
+    width: 100%;
+    height: 100%;
+}
+.Camp2{
+    float: left;
+    width: 50%;
+    height: 100%;
+}
+.Camp2 button{
+    width: 100%;
+    height: 100%;
+}*/
+
