@@ -21,7 +21,7 @@ jobs:
           set -euo pipefail
           cd genesis-ci
           base64 -d genesis_sources.tgz.b64 > genesis_sources.tgz
-          echo '23e7216c30d2dd4e37b0f3f9ce232f3d675006636125b67437f48133dc9c098c  genesis_sources.tgz' | sha256sum -c -
+          echo '33efa4f0575131e2149f28994826e8be08e8627224ad2d568e59d359762ea359  genesis_sources.tgz' | sha256sum -c -
           mkdir -p contracts
           tar -xzf genesis_sources.tgz -C contracts
           sha256sum contracts/*.sol | tee source-sha256.txt
