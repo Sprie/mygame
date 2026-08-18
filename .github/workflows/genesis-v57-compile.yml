@@ -1,0 +1,100 @@
+name: Genesis v5.7 compile gate
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'genesis-ci/**'
+      - '.github/workflows/genesis-v57-compile.yml'
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore exact v5.6 deployment sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd genesis-ci
+          base64 -d genesis_sources.tgz.b64 > genesis_sources.tgz
+          echo '23e7216c30d2dd4e37b0f3f9ce232f3d675006636125b67437f48133dc9c098c  genesis_sources.tgz' | sha256sum -c -
+          mkdir -p contracts
+          tar -xzf genesis_sources.tgz -C contracts
+          sha256sum contracts/*.sol | tee source-sha256.txt
+
+      - name: Install pinned solc 0.8.24
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd genesis-ci
+          curl -L --fail --retry 3 'https://binaries.soliditylang.org/linux-amd64/solc-linux-amd64-v0.8.24+commit.e11b9ed9' -o solc
+          echo 'fb03a29a517452b9f12bcf459ef37d0a543765bb3bbc911e70a87d6a37c30d5f  solc' | sha256sum -c -
+          chmod +x solc
+          ./solc --version | tee solc-version.txt
+
+      - name: Build standard-json input
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd genesis-ci
+          python3 - <<'PY'
+          import json, pathlib
+          names = [
+            'GenesisHashScheduleV56.sol',
+            'GenesisMerklePackedFrontierV56.sol',
+            'GenesisMicrostepAdjudicatorPackedV56.sol',
+            'GenesisWorldRegistryPackedV56.sol',
+          ]
+          sources = {n: {'content': (pathlib.Path('contracts')/n).read_text()} for n in names}
+          obj = {
+            'language':'Solidity',
+            'sources':sources,
+            'settings':{
+              'optimizer':{'enabled':True,'runs':200},
+              'viaIR':True,
+              'evmVersion':'paris',
+              'metadata':{'bytecodeHash':'none'},
+              'outputSelection':{'*':{'*':['abi','evm.bytecode.object','evm.deployedBytecode.object','metadata']}}
+            }
+          }
+          pathlib.Path('solc-input.json').write_text(json.dumps(obj))
+          PY
+
+      - name: Compile and enforce runtime-size gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd genesis-ci
+          ./solc --standard-json < solc-input.json > solc-output.json
+          python3 - <<'PY'
+          import json, pathlib, sys
+          out=json.loads(pathlib.Path('solc-output.json').read_text())
+          errors=[e for e in out.get('errors',[]) if e.get('severity')=='error']
+          rows=[]
+          for src, cs in out.get('contracts',{}).items():
+            for name, c in cs.items():
+              creation=c.get('evm',{}).get('bytecode',{}).get('object','')
+              runtime=c.get('evm',{}).get('deployedBytecode',{}).get('object','')
+              rows.append({'source':src,'contract':name,'creationBytes':len(creation)//2,'runtimeBytes':len(runtime)//2,'runtimeUnder24576':len(runtime)//2 <= 24576})
+          report={'compilerErrors':errors,'contracts':rows,'allRuntimeUnder24576':all(r['runtimeUnder24576'] for r in rows)}
+          pathlib.Path('compile-report.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          if errors or not rows or not report['allRuntimeUnder24576']:
+            sys.exit(1)
+          PY
+
+      - name: Upload compiler evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: genesis-v57-solc-evidence
+          path: |
+            genesis-ci/solc-version.txt
+            genesis-ci/source-sha256.txt
+            genesis-ci/solc-input.json
+            genesis-ci/solc-output.json
+            genesis-ci/compile-report.json
