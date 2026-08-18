@@ -1,4 +1,4 @@
-name: Genesis v5.7 compile gate
+name: Genesis v5.7 split compile gate
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore exact sources and apply compile-only tuple fix
+      - name: Restore frozen sources and generate size-safe modules
         shell: bash
         run: |
           set -euo pipefail
@@ -23,30 +23,89 @@ jobs:
           curl -L --fail --retry 3 'https://raw.githubusercontent.com/Sprie/mygame/e7e05a2123974451a22ad4885d63c461799a9ac7/genesis-ci/genesis_sources.tgz.b64' -o original.b64
           base64 -d original.b64 > genesis_sources.tgz
           echo '23e7216c30d2dd4e37b0f3f9ce232f3d675006636125b67437f48133dc9c098c  genesis_sources.tgz' | sha256sum -c -
-          rm -rf contracts && mkdir -p contracts
+          rm -rf contracts && mkdir contracts
           tar -xzf genesis_sources.tgz -C contracts
           python3 - <<'PY'
           from pathlib import Path
+          import re, hashlib, json
           p=Path('contracts/GenesisMicrostepAdjudicatorPackedV56.sol')
-          s=p.read_text()
-          replacements={
+          src=p.read_text()
+          fixes={
             'moveTo(s, target, bestFood(s, L));':'(uint16 nx, uint16 ny) = bestFood(s, L);\n            moveTo(s, target, nx, ny);',
             'moveTo(s, target, wander(s, L));':'(uint16 nx, uint16 ny) = wander(s, L);\n            moveTo(s, target, nx, ny);',
             'moveTo(s, target, leastCrowd(s, L));':'(uint16 nx, uint16 ny) = leastCrowd(s, L);\n            moveTo(s, target, nx, ny);',
           }
-          for old,new in replacements.items():
-              assert s.count(old)==1, old
-              s=s.replace(old,new)
-          p.write_text(s)
+          for old,new in fixes.items():
+              assert src.count(old)==1, old
+              src=src.replace(old,new)
+          assert hashlib.sha256(src.encode()).hexdigest()=='4263e7238ea193bfa088ac2b1f100a5e3493e1a19223f5940c89f8bd7e7c3928'
+
+          def replace_function(source,name,new_text):
+              m=re.search(r'\n    function\s+'+re.escape(name)+r'\s*\(',source); assert m
+              start=m.start()+1; brace=source.find('{',m.end()); depth=0
+              for i in range(brace,len(source)):
+                  if source[i]=='{': depth+=1
+                  elif source[i]=='}':
+                      depth-=1
+                      if depth==0: return source[:start]+new_text+source[i+1:]
+              raise RuntimeError('unclosed')
+
+          movement='''    function run(State memory s, uint16 target) private pure returns (Action) {
+              uint256 si=findSlotIndex(s,target); LocalSlot memory sl=s.slots[si];
+              if(!sl.occupied||sl.life.bornEpoch>=s.epoch)return Action.NOOP;
+              Life memory L=sl.life; L.age+=1; L.energy-=int32(int256(metab(L,s.epoch))); s.slots[si].life=L;
+              if(L.energy<=0){kill(s,target,CAUSE_STARVATION);return Action.DEATH;}
+              if(chance(deathNum(L),1_000_000,CTX_DEATH,args3(s.seed,s.epoch,L.uid))){kill(s,target,CAUSE_AGE);return Action.DEATH;}
+              Action a=brainAction(s,L); require(a==Action.FORAGE||a==Action.WANDER||a==Action.FLEE,"module");
+              if(a==Action.FORAGE){(uint16 nx,uint16 ny)=bestFood(s,L);moveTo(s,target,nx,ny);if(slotOccupied(s,target))eat(s,target);}
+              else if(a==Action.WANDER){(uint16 nx,uint16 ny)=wander(s,L);moveTo(s,target,nx,ny);if(slotOccupied(s,target))eat(s,target);}
+              else{(uint16 nx,uint16 ny)=leastCrowd(s,L);moveTo(s,target,nx,ny);if(slotOccupied(s,target))eat(s,target);}
+              if(slotOccupied(s,target)&&s.slots[findSlotIndex(s,target)].life.energy<=0)kill(s,target,CAUSE_STARVATION);
+              return a;
+          }'''
+          combat='''    function run(State memory s, uint16 target) private pure returns (Action) {
+              uint256 si=findSlotIndex(s,target); LocalSlot memory sl=s.slots[si];
+              if(!sl.occupied||sl.life.bornEpoch>=s.epoch)return Action.NOOP;
+              Life memory L=sl.life; L.age+=1; L.energy-=int32(int256(metab(L,s.epoch))); s.slots[si].life=L;
+              if(L.energy<=0){kill(s,target,CAUSE_STARVATION);return Action.DEATH;}
+              if(chance(deathNum(L),1_000_000,CTX_DEATH,args3(s.seed,s.epoch,L.uid))){kill(s,target,CAUSE_AGE);return Action.DEATH;}
+              Action a=brainAction(s,L); require(a==Action.ATTACK,"module"); attack(s,target);
+              if(slotOccupied(s,target))eat(s,target);
+              if(slotOccupied(s,target)&&s.slots[findSlotIndex(s,target)].life.energy<=0)kill(s,target,CAUSE_STARVATION);
+              return a;
+          }'''
+          mate='''    function run(State memory s, uint16 target) private pure returns (Action) {
+              uint256 si=findSlotIndex(s,target); LocalSlot memory sl=s.slots[si];
+              if(!sl.occupied||sl.life.bornEpoch>=s.epoch)return Action.NOOP;
+              Life memory L=sl.life; L.age+=1; L.energy-=int32(int256(metab(L,s.epoch))); s.slots[si].life=L;
+              if(L.energy<=0){kill(s,target,CAUSE_STARVATION);return Action.DEATH;}
+              if(chance(deathNum(L),1_000_000,CTX_DEATH,args3(s.seed,s.epoch,L.uid))){kill(s,target,CAUSE_AGE);return Action.DEATH;}
+              Action a=brainAction(s,L); require(a==Action.MATE,"module"); eat(s,target);
+              if(slotOccupied(s,target))reproduce(s,target);
+              if(slotOccupied(s,target)&&s.slots[findSlotIndex(s,target)].life.energy<=0)kill(s,target,CAUSE_STARVATION);
+              return a;
+          }'''
+          for kind,run in [('Movement',movement),('Combat',combat),('Mate',mate)]:
+              s=src.replace('contract GenesisMicrostepAdjudicatorPackedV56',f'contract GenesisMicrostep{kind}ModuleV57')
+              s=replace_function(s,'run',run)
+              Path(f'contracts/GenesisMicrostep{kind}ModuleV57.sol').write_text(s)
+
+          router='''// SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.24;
+          contract GenesisMicrostepAdjudicatorPackedV56 {
+           enum Action{NOOP,DEATH,FORAGE,WANDER,FLEE,ATTACK,MATE}
+           struct MicroWitness{uint64 seed;uint64 epoch;uint16 stepIndex;uint64 nextUid;uint16 freeHead;bytes32 historyRoot;bytes32 preSlotRoot;bytes32 preCellRoot;bytes32 preWorldRoot;bytes localSlotsPacked;bytes localCellsPacked;bytes slotFrontierPacked;bytes cellFrontierPacked;}
+           struct EvalResult{bytes32 expectedPostWorldRoot;bytes32 expectedPostSlotRoot;bytes32 expectedPostCellRoot;bytes32 expectedPostMetaRoot;uint64 postNextUid;uint16 postFreeHead;bytes32 postHistoryRoot;uint16 expectedSlot;Action action;}
+           address public immutable movementModule;address public immutable combatModule;address public immutable mateModule;
+           bytes4 private constant EVAL_SELECTOR=bytes4(keccak256("evaluate((uint64,uint64,uint16,uint64,uint16,bytes32,bytes32,bytes32,bytes32,bytes,bytes,bytes,bytes),bytes32)"));
+           constructor(address m,address c,address t){require(m!=address(0)&&c!=address(0)&&t!=address(0),"module");movementModule=m;combatModule=c;mateModule=t;}
+           function evaluate(MicroWitness calldata w,bytes32 p) external view returns(EvalResult memory){bytes memory q=abi.encodeWithSelector(EVAL_SELECTOR,w,p);(bool ok,bytes memory d)=movementModule.staticcall(q);if(ok)return abi.decode(d,(EvalResult));(ok,d)=combatModule.staticcall(q);if(ok)return abi.decode(d,(EvalResult));(ok,d)=mateModule.staticcall(q);require(ok,"no module");return abi.decode(d,(EvalResult));}
+          }
+          '''
+          Path('contracts/GenesisMicrostepAdjudicatorPackedV56.sol').write_text(router)
+          sha={x.name:hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(Path('contracts').glob('*.sol'))}
+          Path('split-source-sha256.json').write_text(json.dumps(sha,indent=2)); print(json.dumps(sha,indent=2))
           PY
-          cat > expected-source-sha256.txt <<'EOF'
-          5d7a709bd466ee134ccddcce582797e885c58d01461ead60ad1a484b760539dd  contracts/GenesisHashScheduleV56.sol
-          3f53aea5372b79cece3b2e7a044f18f0e586fc9de32b4c0e3a9e8742a3a41068  contracts/GenesisMerklePackedFrontierV56.sol
-          4263e7238ea193bfa088ac2b1f100a5e3493e1a19223f5940c89f8bd7e7c3928  contracts/GenesisMicrostepAdjudicatorPackedV56.sol
-          27769d64f7557bf6fdf0f14fbce5072f60b0558313022dbd328bcc4a0a4847a7  contracts/GenesisWorldRegistryPackedV56.sol
-          EOF
-          sha256sum -c expected-source-sha256.txt
-          sha256sum contracts/*.sol | tee source-sha256.txt
 
       - name: Install pinned solc 0.8.24
         shell: bash
@@ -58,66 +117,38 @@ jobs:
           chmod +x solc
           ./solc --version | tee solc-version.txt
 
-      - name: Build standard-json input
+      - name: Compile split deployment and enforce size
         shell: bash
         run: |
           set -euo pipefail
           cd genesis-ci
           python3 - <<'PY'
-          import json, pathlib
-          names = [
-            'GenesisHashScheduleV56.sol',
-            'GenesisMerklePackedFrontierV56.sol',
-            'GenesisMicrostepAdjudicatorPackedV56.sol',
-            'GenesisWorldRegistryPackedV56.sol',
-          ]
-          sources = {n: {'content': (pathlib.Path('contracts')/n).read_text()} for n in names}
-          obj = {
-            'language':'Solidity',
-            'sources':sources,
-            'settings':{
-              'optimizer':{'enabled':True,'runs':1},
-              'viaIR':True,
-              'evmVersion':'paris',
-              'metadata':{'bytecodeHash':'none'},
-              'outputSelection':{'*':{'*':['abi','evm.bytecode.object','evm.deployedBytecode.object','metadata']}}
-            }
-          }
+          import json,pathlib
+          sources={p.name:{'content':p.read_text()} for p in pathlib.Path('contracts').glob('*.sol')}
+          obj={'language':'Solidity','sources':sources,'settings':{'optimizer':{'enabled':True,'runs':1},'viaIR':True,'evmVersion':'paris','metadata':{'bytecodeHash':'none'},'outputSelection':{'*':{'*':['abi','evm.bytecode.object','evm.deployedBytecode.object']}}}}
           pathlib.Path('solc-input.json').write_text(json.dumps(obj))
           PY
-
-      - name: Compile and enforce runtime-size gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd genesis-ci
           ./solc --standard-json < solc-input.json > solc-output.json
           python3 - <<'PY'
-          import json, pathlib, sys
-          out=json.loads(pathlib.Path('solc-output.json').read_text())
-          errors=[e for e in out.get('errors',[]) if e.get('severity')=='error']
-          rows=[]
-          for src, cs in out.get('contracts',{}).items():
-            for name, c in cs.items():
-              creation=c.get('evm',{}).get('bytecode',{}).get('object','')
-              runtime=c.get('evm',{}).get('deployedBytecode',{}).get('object','')
-              rows.append({'source':src,'contract':name,'creationBytes':len(creation)//2,'runtimeBytes':len(runtime)//2,'runtimeUnder24576':len(runtime)//2 <= 24576})
-          report={'optimizerRuns':1,'compilerErrors':errors,'contracts':rows,'allRuntimeUnder24576':all(r['runtimeUnder24576'] for r in rows)}
-          pathlib.Path('compile-report.json').write_text(json.dumps(report,indent=2))
-          print(json.dumps(report,indent=2))
-          if errors or not rows or not report['allRuntimeUnder24576']:
-            sys.exit(1)
+          import json,pathlib,sys
+          out=json.loads(pathlib.Path('solc-output.json').read_text()); errors=[e for e in out.get('errors',[]) if e.get('severity')=='error']; rows=[]
+          for src,cs in out.get('contracts',{}).items():
+              for name,c in cs.items():
+                  creation=c.get('evm',{}).get('bytecode',{}).get('object',''); runtime=c.get('evm',{}).get('deployedBytecode',{}).get('object','')
+                  rows.append({'source':src,'contract':name,'creationBytes':len(creation)//2,'runtimeBytes':len(runtime)//2,'runtimeUnder24576':len(runtime)//2<=24576})
+          report={'optimizerRuns':1,'compilerErrors':errors,'contracts':rows,'allRuntimeUnder24576':bool(rows) and all(r['runtimeUnder24576'] for r in rows)}
+          pathlib.Path('compile-report.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))
+          if errors or not report['allRuntimeUnder24576']:sys.exit(1)
           PY
 
       - name: Upload compiler evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: genesis-v57-solc-evidence
+          name: genesis-v57-split-solc-evidence
           path: |
             genesis-ci/solc-version.txt
-            genesis-ci/source-sha256.txt
-            genesis-ci/expected-source-sha256.txt
+            genesis-ci/split-source-sha256.json
             genesis-ci/solc-input.json
             genesis-ci/solc-output.json
             genesis-ci/compile-report.json
