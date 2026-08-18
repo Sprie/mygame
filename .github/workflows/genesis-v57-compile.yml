@@ -76,7 +76,7 @@ jobs:
             'language':'Solidity',
             'sources':sources,
             'settings':{
-              'optimizer':{'enabled':True,'runs':200},
+              'optimizer':{'enabled':True,'runs':1},
               'viaIR':True,
               'evmVersion':'paris',
               'metadata':{'bytecodeHash':'none'},
@@ -102,7 +102,7 @@ jobs:
               creation=c.get('evm',{}).get('bytecode',{}).get('object','')
               runtime=c.get('evm',{}).get('deployedBytecode',{}).get('object','')
               rows.append({'source':src,'contract':name,'creationBytes':len(creation)//2,'runtimeBytes':len(runtime)//2,'runtimeUnder24576':len(runtime)//2 <= 24576})
-          report={'compilerErrors':errors,'contracts':rows,'allRuntimeUnder24576':all(r['runtimeUnder24576'] for r in rows)}
+          report={'optimizerRuns':1,'compilerErrors':errors,'contracts':rows,'allRuntimeUnder24576':all(r['runtimeUnder24576'] for r in rows)}
           pathlib.Path('compile-report.json').write_text(json.dumps(report,indent=2))
           print(json.dumps(report,indent=2))
           if errors or not rows or not report['allRuntimeUnder24576']:
