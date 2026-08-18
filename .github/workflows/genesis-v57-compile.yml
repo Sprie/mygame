@@ -15,15 +15,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore exact v5.6 deployment sources
+      - name: Restore exact sources and apply compile-only tuple fix
         shell: bash
         run: |
           set -euo pipefail
           cd genesis-ci
-          base64 -d genesis_sources.tgz.b64 > genesis_sources.tgz
-          echo '33efa4f0575131e2149f28994826e8be08e8627224ad2d568e59d359762ea359  genesis_sources.tgz' | sha256sum -c -
-          mkdir -p contracts
+          curl -L --fail --retry 3 'https://raw.githubusercontent.com/Sprie/mygame/e7e05a2123974451a22ad4885d63c461799a9ac7/genesis-ci/genesis_sources.tgz.b64' -o original.b64
+          base64 -d original.b64 > genesis_sources.tgz
+          echo '23e7216c30d2dd4e37b0f3f9ce232f3d675006636125b67437f48133dc9c098c  genesis_sources.tgz' | sha256sum -c -
+          rm -rf contracts && mkdir -p contracts
           tar -xzf genesis_sources.tgz -C contracts
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('contracts/GenesisMicrostepAdjudicatorPackedV56.sol')
+          s=p.read_text()
+          replacements={
+            'moveTo(s, target, bestFood(s, L));':'(uint16 nx, uint16 ny) = bestFood(s, L);\n            moveTo(s, target, nx, ny);',
+            'moveTo(s, target, wander(s, L));':'(uint16 nx, uint16 ny) = wander(s, L);\n            moveTo(s, target, nx, ny);',
+            'moveTo(s, target, leastCrowd(s, L));':'(uint16 nx, uint16 ny) = leastCrowd(s, L);\n            moveTo(s, target, nx, ny);',
+          }
+          for old,new in replacements.items():
+              assert s.count(old)==1, old
+              s=s.replace(old,new)
+          p.write_text(s)
+          PY
+          cat > expected-source-sha256.txt <<'EOF'
+          5d7a709bd466ee134ccddcce582797e885c58d01461ead60ad1a484b760539dd  contracts/GenesisHashScheduleV56.sol
+          3f53aea5372b79cece3b2e7a044f18f0e586fc9de32b4c0e3a9e8742a3a41068  contracts/GenesisMerklePackedFrontierV56.sol
+          4263e7238ea193bfa088ac2b1f100a5e3493e1a19223f5940c89f8bd7e7c3928  contracts/GenesisMicrostepAdjudicatorPackedV56.sol
+          27769d64f7557bf6fdf0f14fbce5072f60b0558313022dbd328bcc4a0a4847a7  contracts/GenesisWorldRegistryPackedV56.sol
+          EOF
+          sha256sum -c expected-source-sha256.txt
           sha256sum contracts/*.sol | tee source-sha256.txt
 
       - name: Install pinned solc 0.8.24
@@ -95,6 +117,7 @@ jobs:
           path: |
             genesis-ci/solc-version.txt
             genesis-ci/source-sha256.txt
+            genesis-ci/expected-source-sha256.txt
             genesis-ci/solc-input.json
             genesis-ci/solc-output.json
             genesis-ci/compile-report.json
