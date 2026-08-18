@@ -1,0 +1,1 @@
+Temporary isolated CI harness for Genesis v5.7. This branch is intentionally not merged. It restores the exact compressed v5.6 deployment sources, compiles them with pinned Solidity 0.8.24, enforces a 24,576-byte deployed-runtime gate, and uploads compiler evidence.
