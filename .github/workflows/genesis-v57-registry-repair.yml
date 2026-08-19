@@ -1,0 +1,65 @@
+name: Genesis v5.7 repair Registry vector transport
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/genesis-v57-registry-repair.yml'
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: genesis-v57-ci
+      - name: Repair chunks against locked hashes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          alpha=b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+          specs={
+            'genesis-ci/registry.part1':(9000,'9c53dd2f2e1cf896c1056a8714cd8abda214366987f812fc3290be8a4011b04f'),
+            'genesis-ci/registry.part2':(1848,'9a03f2ec7e615e2fc94ad01e66fbff2bc761f252235083577d882033236eb84b'),
+          }
+          def H(b):return hashlib.sha256(b).hexdigest()
+          for name,(wantlen,target) in specs.items():
+            p=Path(name);b=p.read_bytes();print(name,'len',len(b),'sha',H(b))
+            if H(b)==target:continue
+            outs=[]
+            # Trailing newline only.
+            if H(b.rstrip(b'\n'))==target:outs.append(('trim-newline',b.rstrip(b'\n')))
+            # One extra Base64 quantum.
+            if len(b)==wantlen+4:
+              for i in range(len(b)-3):
+                c=b[:i]+b[i+4:]
+                if H(c)==target:outs.append((f'del4@{i}',c))
+            # One character substitution.
+            if len(b)==wantlen:
+              w=bytearray(b)
+              for i,old in enumerate(b):
+                for ch in alpha:
+                  if ch==old:continue
+                  w[i]=ch
+                  if H(w)==target:outs.append((f'sub@{i}:{chr(old)}->{chr(ch)}',bytes(w)))
+                w[i]=old
+            unique={x for _,x in outs}
+            print(' candidates',[k for k,_ in outs],'unique_outputs',len(unique))
+            if len(unique)!=1:raise SystemExit(f'{name}: cannot uniquely repair')
+            fixed=next(iter(unique));assert len(fixed)==wantlen and H(fixed)==target;p.write_bytes(fixed)
+          PY
+          echo '9c53dd2f2e1cf896c1056a8714cd8abda214366987f812fc3290be8a4011b04f  genesis-ci/registry.part1' | sha256sum -c -
+          echo '9a03f2ec7e615e2fc94ad01e66fbff2bc761f252235083577d882033236eb84b  genesis-ci/registry.part2' | sha256sum -c -
+          cat genesis-ci/registry.part1 genesis-ci/registry.part2 | base64 -d | gzip -d > /tmp/registry.json
+          echo '83ea45ca0203b6a00fa8080a7c761beb2c2e5ab4a20b8d196db8bb45bf980033  /tmp/registry.json' | sha256sum -c -
+      - name: Commit transport-only repair
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- genesis-ci/registry.part1 genesis-ci/registry.part2; then exit 0; fi
+          git config user.name 'Genesis CI'
+          git config user.email 'genesis-ci@users.noreply.github.com'
+          git add genesis-ci/registry.part1 genesis-ci/registry.part2
+          git commit -m 'Repair transported v5.7 Registry vectors'
+          git push origin HEAD:genesis-v57-ci
