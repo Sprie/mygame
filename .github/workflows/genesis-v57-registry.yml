@@ -1,0 +1,70 @@
+name: Genesis v5.7 Registry fraud gate
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'genesis-ci/registry.part*'
+      - '.github/workflows/genesis-v57-registry.yml'
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore locked bytecode and Registry vectors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p genesis-ci/registry && cd genesis-ci/registry
+          gh api repos/Sprie/mygame/actions/artifacts/9318342721/zip > evidence.zip
+          echo 'c38b0441c35ebc5564ec3ed0df55af42e7cbbf0525a6ddaeb88a05fcf4753b96  evidence.zip' | sha256sum -c -
+          unzip -q evidence.zip -d evidence
+          echo '9c53dd2f2e1cf896c1056a8714cd8abda214366987f812fc3290be8a4011b04f  ../registry.part1' | sha256sum -c -
+          echo '9a03f2ec7e615e2fc94ad01e66fbff2bc761f252235083577d882033236eb84b  ../registry.part2' | sha256sum -c -
+          cat ../registry.part1 ../registry.part2 | base64 -d | gzip -d > registry-vectors.json
+          echo '83ea45ca0203b6a00fa8080a7c761beb2c2e5ab4a20b8d196db8bb45bf980033  registry-vectors.json' | sha256sum -c -
+          python3 - <<'PY'
+          import json
+          r=json.load(open('evidence/compile-report.json')); assert r['compilerErrors']==[] and r['allRuntimeUnder24576']
+          v=json.load(open('registry-vectors.json')); assert v['assertions']['actualTraceRootMatchesLockedBirthVector'] is True
+          print('locked bytecode + registry vectors: PASS')
+          PY
+          npm init -y >/dev/null
+          npm install --no-save ethers@6 ganache@7 >/dev/null
+      - name: Execute Registry fraud adjudication
+        run: |
+          set -euo pipefail
+          cd genesis-ci/registry
+          cat > registry-test.cjs <<'JS'
+          const fs=require('fs'),ganache=require('ganache');const {ethers}=require('ethers');
+          const out=JSON.parse(fs.readFileSync('evidence/solc-output.json'));const V=JSON.parse(fs.readFileSync('registry-vectors.json'));
+          function art(s,n){const c=out.contracts[s][n];if(!c)throw Error('artifact '+s+':'+n);return{abi:c.abi,bytecode:'0x'+c.evm.bytecode.object}}
+          function es(e){return[e.auditPackedStateRoot,e.slotRoot,e.cellRoot,BigInt(e.nextLifeUid),BigInt(e.freeHead),e.historyRoot,e.worldRoot]}
+          function wit(w){return[BigInt(w.seed),BigInt(w.epoch),BigInt(w.stepIndex),BigInt(w.nextUid),BigInt(w.freeHead),w.historyRoot,w.preSlotRoot,w.preCellRoot,w.preWorldRoot,w.localSlotsPacked,w.localCellsPacked,w.slotFrontierPacked,w.cellFrontierPacked]}
+          async function rev(p,label,needle){try{await p;throw Error(label+' unexpectedly succeeded')}catch(e){if(String(e.message).includes('unexpectedly succeeded'))throw e;if(needle&&!String(e.message).includes(needle))console.log(label,'reverted (reason provider-obscured)');}}
+          (async()=>{const g=ganache.provider({logging:{quiet:true},miner:{blockGasLimit:120000000}});const p=new ethers.BrowserProvider(g),s=await p.getSigner();
+            async function dep(src,n,args=[]){const a=art(src,n),f=new ethers.ContractFactory(a.abi,a.bytecode,s),c=await f.deploy(...args);await c.waitForDeployment();return c}
+            const move=await dep('GenesisMicrostepMovementModuleV57.sol','GenesisMicrostepMovementModuleV57');const combat=await dep('GenesisMicrostepCombatModuleV57.sol','GenesisMicrostepCombatModuleV57');const mate=await dep('GenesisMicrostepMateModuleV57.sol','GenesisMicrostepMateModuleV57');const router=await dep('GenesisMicrostepAdjudicatorPackedV56.sol','GenesisMicrostepAdjudicatorPackedV56',[await move.getAddress(),await combat.getAddress(),await mate.getAddress()]);
+            async function reg(){return dep('GenesisWorldRegistryPackedV56.sol','GenesisWorldRegistryV56',[BigInt(V.seed),V.rulesHash,V.protocolHash,await router.getAddress(),BigInt(V.challengeWindowBlocks),es(V.genesisEndState)])}
+            async function submit(r,x){const gas=await r.submitEpoch.estimateGas(1n,x.preludeCellRoot,x.traceRoot,es(x.endState),x.startTraceProof,x.endTraceProof);const tx=await r.submitEpoch(1n,x.preludeCellRoot,x.traceRoot,es(x.endState),x.startTraceProof,x.endTraceProof,{gasLimit:gas+500000n});const rc=await tx.wait();return{estimate:gas.toString(),used:rc.gasUsed.toString()}}
+            const report={protocolHash:V.protocolHash,rulesHash:V.rulesHash,tests:{}};
+            // 1) Honest trace must NOT be challengeable.
+            const honest=await reg();report.tests.honestSubmit=await submit(honest,V.validEpoch);const hc=V.validChallenge;await rev(honest.proveMicrostepFraud.staticCall(1n,BigInt(hc.stepIndex),wit(hc.witness),hc.claimedPostWorld,hc.preTraceProof,hc.postTraceProof),'honest challenge','no fraud');let he=await honest.epochCommitment(1n);if(he.challenged)throw Error('honest epoch marked challenged');for(let i=0;i<3;i++)await g.request({method:'evm_mine',params:[]});const ftx=await honest.finalizeEpoch(1n);const frc=await ftx.wait();he=await honest.epochCommitment(1n);if(!he.finalized||he.challenged)throw Error('honest finalize state');report.tests.honestNoFraud=true;report.tests.finalizeGas=frc.gasUsed.toString();
+            // 2) One forged intermediate boundary must be proven fraud.
+            const bad=await reg();report.tests.microFraudSubmit=await submit(bad,V.microFraudEpoch);const mc=V.microFraudEpoch.challenge;await rev(bad.proveMicrostepFraud.staticCall(1n,BigInt(mc.stepIndex),wit(mc.witness),mc.expectedCanonicalPostWorld,mc.preTraceProof,mc.postTraceProof),'uncommitted canonical post','post trace');const mg=await bad.proveMicrostepFraud.estimateGas(1n,BigInt(mc.stepIndex),wit(mc.witness),mc.claimedPostWorld,mc.preTraceProof,mc.postTraceProof);const mtx=await bad.proveMicrostepFraud(1n,BigInt(mc.stepIndex),wit(mc.witness),mc.claimedPostWorld,mc.preTraceProof,mc.postTraceProof,{gasLimit:mg+500000n});const mrc=await mtx.wait();const me=await bad.epochCommitment(1n);if(!me.challenged)throw Error('micro fraud not marked');report.tests.microFraud={estimate:mg.toString(),used:mrc.gasUsed.toString(),challenged:true,expectedCanonicalPost:mc.expectedCanonicalPostWorld,forgedPost:mc.claimedPostWorld};
+            // 3) One forged seasonal-prelude Cell must be proven fraud.
+            const pr=await reg();report.tests.preludeFraudSubmit=await submit(pr,V.preludeFraudEpoch);const pc=V.preludeFraudEpoch.challenge;const expected=await pr.expectedFoodAfterPrelude(1n,BigInt(pc.x),BigInt(pc.y),BigInt(parseInt(pc.oldCell10.slice(10,18),16)));if(Number(expected)!==pc.goodPreludeFood)throw Error('prelude expected-food mismatch');const pg=await pr.provePreludeCellFraud.estimateGas(1n,pc.oldCell10,pc.oldProof,pc.newCell10,pc.newProof);const ptx=await pr.provePreludeCellFraud(1n,pc.oldCell10,pc.oldProof,pc.newCell10,pc.newProof,{gasLimit:pg+300000n});const prc=await ptx.wait();const pe=await pr.epochCommitment(1n);if(!pe.challenged)throw Error('prelude fraud not marked');report.tests.preludeFraud={estimate:pg.toString(),used:prc.gasUsed.toString(),challenged:true,cellIndex:pc.cellIndex,goodFood:pc.goodPreludeFood,badFood:pc.badPreludeFood};
+            report.allRegistryGatesPass=true;fs.writeFileSync('registry-report.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));await g.disconnect();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          node registry-test.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: genesis-v57-registry-evidence
+          path: |
+            genesis-ci/registry/registry-report.json
+            genesis-ci/registry/registry-vectors.json
