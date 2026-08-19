@@ -46,7 +46,7 @@ jobs:
             const r=await dep('GenesisMicrostepAdjudicatorPackedV56.sol','GenesisMicrostepAdjudicatorPackedV56',[await m.getAddress(),await c.getAddress(),await t.getAddress()]);
             const rows=[];for(const v of vs){const z=await r.evaluate(w(v),PH),e=v.expectedPost;eq(z[0],e.worldRoot,v.label+' world');eq(z[1],e.slotRoot,v.label+' slot');eq(z[2],e.cellRoot,v.label+' cell');eq(z[3],e.metaRoot,v.label+' meta');eq(z[4],BigInt(e.nextUid),v.label+' nextUid');eq(z[5],BigInt(e.freeHead),v.label+' freeHead');eq(z[6],e.historyRoot,v.label+' history');eq(z[7],BigInt(v.expectedSlot),v.label+' target');eq(z[8],A[v.actionObserved],v.label+' action');rows.push({label:v.label,action:v.actionObserved,world:z[0]})}
             const b=vs.find(v=>v.label==='SUCCESSFUL_BIRTH');const bw=w(b);await rev(r.evaluate(bw,'0x'+'11'.repeat(32)),'bad protocol');const e=[...bw];e[1]++;await rev(r.evaluate(e,PH),'bad epoch');const q=[...bw];q[2]++;await rev(r.evaluate(q,PH),'bad step');const x=[...bw];let h=x[10].slice(2);x[10]='0x'+(h[0]==='0'?'1':'0')+h.slice(1);await rev(r.evaluate(x,PH),'bad cell');
-            const rep={allSevenExact:true,tamper4of4:true,rows};fs.writeFileSync('smoke-report.json',JSON.stringify(rep,null,2));console.log(JSON.stringify(rep,null,2));
+            const rep={allSevenExact:true,tamper4of4:true,rows};fs.writeFileSync('smoke-report.json',JSON.stringify(rep,null,2));console.log(JSON.stringify(rep,null,2));await gp.disconnect();
           })().catch(e=>{console.error(e);process.exit(1)});
           JS
           node smoke.cjs
