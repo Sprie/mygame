@@ -1,0 +1,161 @@
+name: Genesis v5.7 real EVM semantic gate
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'genesis-ci/vectors.part*'
+      - '.github/workflows/genesis-v57-evm.yml'
+
+jobs:
+  evm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore locked compiler evidence and vectors
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p genesis-ci/evm
+          cd genesis-ci/evm
+          gh api repos/Sprie/mygame/actions/artifacts/9318342721/zip > evidence.zip
+          echo 'c38b0441c35ebc5564ec3ed0df55af42e7cbbf0525a6ddaeb88a05fcf4753b96  evidence.zip' | sha256sum -c -
+          unzip -q evidence.zip -d evidence
+          grep -q 'Version: 0.8.24+commit.e11b9ed9' evidence/solc-version.txt
+          python3 - <<'PY'
+          import json
+          r=json.load(open('evidence/compile-report.json'))
+          assert r['compilerErrors']==[]
+          assert r['allRuntimeUnder24576'] is True
+          print('locked compile evidence: PASS')
+          PY
+          cat ../vectors.part1 ../vectors.part2 ../vectors.part3 | base64 -d | gzip -d > packed_frontier_vectors_v56.json
+          echo '0cbf7f99c0fe4ad1901f15177f48f9aaf441838c73983460b3ac599a6bf206a0  packed_frontier_vectors_v56.json' | sha256sum -c -
+
+      - name: Install local EVM harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd genesis-ci/evm
+          npm init -y >/dev/null
+          npm install --no-save ethers@6 ganache@7 >/dev/null
+
+      - name: Deploy compiled bytecode and test Router -> Modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd genesis-ci/evm
+          cat > evm-test.cjs <<'JS'
+          const fs = require('fs');
+          const ganache = require('ganache');
+          const { ethers } = require('ethers');
+
+          const out = JSON.parse(fs.readFileSync('evidence/solc-output.json','utf8'));
+          const vectors = JSON.parse(fs.readFileSync('packed_frontier_vectors_v56.json','utf8'));
+          const protocolHash = '0x1ef4e6307109d90976b0bc757dc28b71efdf1c707d3032760dff73d1f220b621';
+          const actionId = {NOOP:0n,DEATH:1n,FORAGE:2n,WANDER:3n,FLEE:4n,ATTACK:5n,MATE:6n};
+
+          function art(src,name){
+            const c=out.contracts[src][name];
+            if(!c) throw new Error(`missing artifact ${src}:${name}`);
+            return {abi:c.abi, bytecode:'0x'+c.evm.bytecode.object};
+          }
+          function wit(v){
+            return [BigInt(v.seed),BigInt(v.epoch),BigInt(v.stepIndex),BigInt(v.nextUid),BigInt(v.freeHead),
+              v.historyRoot,v.preSlotRoot,v.preCellRoot,v.preWorldRoot,
+              v.localSlotsPacked,v.localCellsPacked,v.slotFrontierPacked,v.cellFrontierPacked];
+          }
+          function norm(x){ return typeof x==='string' ? x.toLowerCase() : x; }
+          function checkResult(label,r,v){
+            const e=v.expectedPost;
+            const checks=[
+              ['world',norm(r[0]),norm(e.worldRoot)],['slot',norm(r[1]),norm(e.slotRoot)],
+              ['cell',norm(r[2]),norm(e.cellRoot)],['meta',norm(r[3]),norm(e.metaRoot)],
+              ['nextUid',BigInt(r[4]),BigInt(e.nextUid)],['freeHead',BigInt(r[5]),BigInt(e.freeHead)],
+              ['history',norm(r[6]),norm(e.historyRoot)],['slotId',BigInt(r[7]),BigInt(v.expectedSlot)],
+              ['action',BigInt(r[8]),actionId[v.actionObserved]],
+            ];
+            for(const [k,a,b] of checks) if(a!==b) throw new Error(`${label} ${k} mismatch: ${a} != ${b}`);
+          }
+          async function mustRevert(p,label){
+            try { await p; throw new Error(`${label}: unexpectedly succeeded`); }
+            catch(e){ if(String(e.message).includes('unexpectedly succeeded')) throw e; return true; }
+          }
+
+          (async()=>{
+            const g = ganache.provider({logging:{quiet:true},chain:{chainId:31337,hardfork:'shanghai'},miner:{blockGasLimit:120000000}});
+            const provider = new ethers.BrowserProvider(g);
+            const signer = await provider.getSigner();
+            async function deploy(src,name,args=[]){
+              const a=art(src,name); const f=new ethers.ContractFactory(a.abi,a.bytecode,signer);
+              const c=await f.deploy(...args); await c.waitForDeployment(); return c;
+            }
+            const movement=await deploy('GenesisMicrostepMovementModuleV57.sol','GenesisMicrostepMovementModuleV57');
+            const combat=await deploy('GenesisMicrostepCombatModuleV57.sol','GenesisMicrostepCombatModuleV57');
+            const mate=await deploy('GenesisMicrostepMateModuleV57.sol','GenesisMicrostepMateModuleV57');
+            const router=await deploy('GenesisMicrostepAdjudicatorPackedV56.sol','GenesisMicrostepAdjudicatorPackedV56',
+              [await movement.getAddress(),await combat.getAddress(),await mate.getAddress()]);
+
+            const rows=[];
+            for(const v of vectors){
+              const w=wit(v);
+              const r=await router.evaluate(w,protocolHash);
+              checkResult(`router ${v.label}`,r,v);
+
+              const mods={movement,combat,mate}; const successes={};
+              for(const [name,m] of Object.entries(mods)){
+                try { const mr=await m.evaluate(w,protocolHash); checkResult(`${name} ${v.label}`,mr,v); successes[name]=true; }
+                catch(e){ successes[name]=false; }
+              }
+              const expected = v.actionObserved==='ATTACK' ? ['combat'] : v.actionObserved==='MATE' ? ['mate'] : v.actionObserved==='DEATH' ? ['movement','combat','mate'] : ['movement'];
+              for(const name of Object.keys(successes)){
+                if(successes[name] !== expected.includes(name)) throw new Error(`${v.label}: route ${name}=${successes[name]} expected ${expected.includes(name)}`);
+              }
+
+              const data=router.interface.encodeFunctionData('evaluate',[w,protocolHash]);
+              const gasEstimate=await provider.estimateGas({from:await signer.getAddress(),to:await router.getAddress(),data});
+              const tx=await signer.sendTransaction({to:await router.getAddress(),data,gasLimit:gasEstimate+1000000n});
+              const receipt=await tx.wait();
+              rows.push({label:v.label,action:v.actionObserved,routeSuccesses:successes,gasEstimate:gasEstimate.toString(),gasUsed:receipt.gasUsed.toString()});
+            }
+
+            const base=vectors.find(v=>v.label==='SUCCESSFUL_BIRTH') || vectors[0];
+            const bw=wit(base);
+            await mustRevert(router.evaluate(bw,'0x'+'11'.repeat(32)),'wrong protocol');
+            const wrongEpoch=[...bw]; wrongEpoch[1]=wrongEpoch[1]+1n;
+            await mustRevert(router.evaluate(wrongEpoch,protocolHash),'wrong epoch');
+            const wrongStep=[...bw]; wrongStep[2]=wrongStep[2]+1n;
+            await mustRevert(router.evaluate(wrongStep,protocolHash),'wrong step');
+            const tamper=[...bw];
+            let h=tamper[10].slice(2); h=(h[0]==='0'?'1':'0')+h.slice(1); tamper[10]='0x'+h;
+            await mustRevert(router.evaluate(tamper,protocolHash),'tampered cell bytes');
+
+            const report={
+              evm:'ganache',ethers:require('ethers/package.json').version,
+              protocolHash,
+              deployed:{movement:await movement.getAddress(),combat:await combat.getAddress(),mate:await mate.getAddress(),router:await router.getAddress()},
+              vectors:rows,
+              tamperTests:{wrongProtocol:true,wrongEpoch:true,wrongStep:true,tamperedCellBytes:true},
+              allSevenExact:true
+            };
+            fs.writeFileSync('evm-report.json',JSON.stringify(report,null,2));
+            console.log(JSON.stringify(report,null,2));
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          node evm-test.cjs
+
+      - name: Upload EVM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: genesis-v57-real-evm-evidence
+          path: |
+            genesis-ci/evm/evm-report.json
+            genesis-ci/evm/evidence/compile-report.json
+            genesis-ci/evm/evidence/solc-version.txt
