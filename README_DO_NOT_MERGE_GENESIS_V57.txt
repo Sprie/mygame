@@ -1,1 +1,1 @@
-Temporary Genesis v5.7 CI harness completed. No production code from this branch is intended for merge. The Draft PR will be closed after evidence capture.
+Temporary Genesis v5.7 CI harness completed. No production code from this branch is intended for merge. Evidence captured; Draft PR is being closed without merge.
