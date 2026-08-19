@@ -25,23 +25,18 @@ jobs:
           def h(x): return hashlib.sha256(x).hexdigest()
           print('length',len(b),'current',h(b),'target',target)
           if h(b)==target: raise SystemExit(0)
-          if h(b.rstrip(b'\n'))==target:
-              p.write_bytes(b.rstrip(b'\n')); print('fixed trailing newline'); raise SystemExit(0)
-          alphabet=b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-          work=bytearray(b)
-          found=None
-          for i,orig in enumerate(b):
-              for c in alphabet:
-                  if c==orig: continue
-                  work[i]=c
-                  if h(work)==target:
-                      found=(i,chr(orig),chr(c)); break
-              work[i]=orig
-              if found: break
-          if not found: raise SystemExit('not a single Base64 substitution')
-          i,old,new=found; work[i]=ord(new); p.write_bytes(work)
+          candidates=[]
+          if len(b)==10232:
+              for i in range(len(b)-3):
+                  c=b[:i]+b[i+4:]
+                  if h(c)==target:
+                      candidates.append((i,b[i:i+4],c))
+          if len(candidates)!=1:
+              raise SystemExit(f'expected exactly one contiguous 4-byte deletion, found {len(candidates)}')
+          i,extra,fixed=candidates[0]
+          p.write_bytes(fixed)
           assert h(p.read_bytes())==target
-          print('repaired index',i,'from',old,'to',new)
+          print('repaired by deleting',extra,'at index',i)
           PY
           cat genesis-ci/vectors.part1 genesis-ci/vectors.part2 genesis-ci/vectors.part3 | base64 -d | gzip -d > /tmp/vectors.json
           echo '0cbf7f99c0fe4ad1901f15177f48f9aaf441838c73983460b3ac599a6bf206a0  /tmp/vectors.json' | sha256sum -c -
