@@ -31,12 +31,14 @@ jobs:
                   c=b[:i]+b[i+4:]
                   if h(c)==target:
                       candidates.append((i,b[i:i+4],c))
-          if len(candidates)!=1:
-              raise SystemExit(f'expected exactly one contiguous 4-byte deletion, found {len(candidates)}')
-          i,extra,fixed=candidates[0]
+          unique={c for _,_,c in candidates}
+          print('candidate positions',[(i,x.decode(errors='replace')) for i,x,_ in candidates])
+          if len(unique)!=1:
+              raise SystemExit(f'candidate repairs do not converge: positions={len(candidates)}, unique_outputs={len(unique)}')
+          fixed=next(iter(unique))
           p.write_bytes(fixed)
           assert h(p.read_bytes())==target
-          print('repaired by deleting',extra,'at index',i)
+          print('repaired to unique locked byte string')
           PY
           cat genesis-ci/vectors.part1 genesis-ci/vectors.part2 genesis-ci/vectors.part3 | base64 -d | gzip -d > /tmp/vectors.json
           echo '0cbf7f99c0fe4ad1901f15177f48f9aaf441838c73983460b3ac599a6bf206a0  /tmp/vectors.json' | sha256sum -c -
