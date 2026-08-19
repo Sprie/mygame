@@ -1,0 +1,74 @@
+name: Genesis v5.7 Registry compact fraud gate
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'genesis-ci/registry-meta.part*'
+      - '.github/workflows/genesis-v57-registry-compact.yml'
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore locked bytecode, witness, and Registry metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p genesis-ci/regcompact && cd genesis-ci/regcompact
+          gh api repos/Sprie/mygame/actions/artifacts/9318342721/zip > evidence.zip
+          echo 'c38b0441c35ebc5564ec3ed0df55af42e7cbbf0525a6ddaeb88a05fcf4753b96  evidence.zip' | sha256sum -c -
+          unzip -q evidence.zip -d evidence
+          echo '63984fa90832c40cc458ea2be1f7aa2ceee17a88dafa7949d09680757eed0da9  ../registry-meta.part1' | sha256sum -c -
+          echo '2d5ef7c115f5b4c083ede73b9accb0555c8204418f67af01534d0811c2574477  ../registry-meta.part2' | sha256sum -c -
+          cat ../registry-meta.part1 ../registry-meta.part2 | base64 -d | gzip -d > registry-meta.json
+          echo '37381242d34ff128bf54dd6140d62ae28108aee68c347d6b9bd169cedcd68acd  registry-meta.json' | sha256sum -c -
+          echo '4af720e5e9566fbe5f3a2cd5669886fac08c380257d3448119006cad744061c5  ../vectors.part1' | sha256sum -c -
+          echo '32a62dffb6a3dea1d5e2d3dd51518668407a6d64e91780166ae444d3da345824  ../vectors.part2' | sha256sum -c -
+          echo '9b99e212fbf32013ddbbc3616da96fa763ccc3f6986d15e7b29164d74f308299  ../vectors.part3' | sha256sum -c -
+          cat ../vectors.part1 ../vectors.part2 ../vectors.part3 | base64 -d | gzip -d > vectors.json
+          echo '0cbf7f99c0fe4ad1901f15177f48f9aaf441838c73983460b3ac599a6bf206a0  vectors.json' | sha256sum -c -
+          python3 - <<'PY'
+          import json
+          r=json.load(open('evidence/compile-report.json')); assert r['compilerErrors']==[] and r['allRuntimeUnder24576']
+          m=json.load(open('registry-meta.json')); assert m['assertions']['actualTraceRootMatchesLockedBirthVector'] is True
+          v=json.load(open('vectors.json')); assert len(v)==7 and any(x['label']=='SUCCESSFUL_BIRTH' for x in v)
+          print('all locked inputs: PASS')
+          PY
+          npm init -y >/dev/null
+          npm install --no-save ethers@6 ganache@7 >/dev/null
+      - name: Execute three-way Registry adjudication
+        run: |
+          set -euo pipefail
+          cd genesis-ci/regcompact
+          cat > test.cjs <<'JS'
+          const fs=require('fs'),ganache=require('ganache');const {ethers}=require('ethers');
+          const out=JSON.parse(fs.readFileSync('evidence/solc-output.json')),M=JSON.parse(fs.readFileSync('registry-meta.json')),VV=JSON.parse(fs.readFileSync('vectors.json'));const birth=VV.find(x=>x.label==='SUCCESSFUL_BIRTH');
+          function art(s,n){const c=out.contracts[s][n];if(!c)throw Error('missing '+s+':'+n);return{abi:c.abi,bytecode:'0x'+c.evm.bytecode.object}}
+          function es(e){return[e.auditPackedStateRoot,e.slotRoot,e.cellRoot,BigInt(e.nextLifeUid),BigInt(e.freeHead),e.historyRoot,e.worldRoot]}
+          function wit(v){return[BigInt(v.seed),BigInt(v.epoch),BigInt(v.stepIndex),BigInt(v.nextUid),BigInt(v.freeHead),v.historyRoot,v.preSlotRoot,v.preCellRoot,v.preWorldRoot,v.localSlotsPacked,v.localCellsPacked,v.slotFrontierPacked,v.cellFrontierPacked]}
+          async function mustRev(p,label){try{await p;throw Error(label+' unexpectedly succeeded')}catch(e){if(String(e.message).includes('unexpectedly succeeded'))throw e;}}
+          (async()=>{const g=ganache.provider({logging:{quiet:true},miner:{blockGasLimit:120000000}}),p=new ethers.BrowserProvider(g),s=await p.getSigner();
+            async function dep(src,n,args=[]){const a=art(src,n),c=await new ethers.ContractFactory(a.abi,a.bytecode,s).deploy(...args);await c.waitForDeployment();return c}
+            const mv=await dep('GenesisMicrostepMovementModuleV57.sol','GenesisMicrostepMovementModuleV57'),cb=await dep('GenesisMicrostepCombatModuleV57.sol','GenesisMicrostepCombatModuleV57'),mt=await dep('GenesisMicrostepMateModuleV57.sol','GenesisMicrostepMateModuleV57'),rt=await dep('GenesisMicrostepAdjudicatorPackedV56.sol','GenesisMicrostepAdjudicatorPackedV56',[await mv.getAddress(),await cb.getAddress(),await mt.getAddress()]);
+            async function registry(){return dep('GenesisWorldRegistryPackedV56.sol','GenesisWorldRegistryV56',[BigInt(M.seed),M.rulesHash,M.protocolHash,await rt.getAddress(),BigInt(M.challengeWindowBlocks),es(M.genesisEndState)])}
+            async function submit(r,x){const ge=await r.submitEpoch.estimateGas(1n,x.preludeCellRoot,x.traceRoot,es(x.endState),x.startTraceProof,x.endTraceProof),tx=await r.submitEpoch(1n,x.preludeCellRoot,x.traceRoot,es(x.endState),x.startTraceProof,x.endTraceProof,{gasLimit:ge+300000n}),rc=await tx.wait();return{estimate:ge.toString(),used:rc.gasUsed.toString()}}
+            const R={rulesHash:M.rulesHash,protocolHash:M.protocolHash,tests:{}};
+            // Honest trace: challenge must fail, then finalization must succeed after window.
+            const h=await registry();R.tests.honestSubmit=await submit(h,M.validEpoch);const hc=M.validChallenge;await mustRev(h.proveMicrostepFraud.staticCall(1n,BigInt(hc.stepIndex),wit(birth),hc.claimedPostWorld,hc.preTraceProof,hc.postTraceProof),'honest no-fraud');let he=await h.epochCommitment(1n);if(he.challenged)throw Error('honest marked challenged');for(let i=0;i<3;i++)await g.request({method:'evm_mine',params:[]});const ft=await h.finalizeEpoch(1n),fr=await ft.wait();he=await h.epochCommitment(1n);if(!he.finalized||he.challenged)throw Error('honest finalize');R.tests.honestNoFraud=true;R.tests.finalizeGas=fr.gasUsed.toString();
+            // Forged intermediate trace boundary: canonical uncommitted post fails membership; committed forged post proves fraud.
+            const b=await registry();R.tests.microSubmit=await submit(b,M.microFraudEpoch);const mc=M.microFraudEpoch.challenge;await mustRev(b.proveMicrostepFraud.staticCall(1n,BigInt(mc.stepIndex),wit(birth),mc.expectedCanonicalPostWorld,mc.preTraceProof,mc.postTraceProof),'uncommitted canonical');const mg=await b.proveMicrostepFraud.estimateGas(1n,BigInt(mc.stepIndex),wit(birth),mc.claimedPostWorld,mc.preTraceProof,mc.postTraceProof),mx=await b.proveMicrostepFraud(1n,BigInt(mc.stepIndex),wit(birth),mc.claimedPostWorld,mc.preTraceProof,mc.postTraceProof,{gasLimit:mg+300000n}),mr=await mx.wait(),me=await b.epochCommitment(1n);if(!me.challenged)throw Error('micro fraud not challenged');R.tests.microFraud={estimate:mg.toString(),used:mr.gasUsed.toString(),challenged:true,canonical:mc.expectedCanonicalPostWorld,forged:mc.claimedPostWorld};
+            // Forged seasonal Prelude cell.
+            const pr=await registry();R.tests.preludeSubmit=await submit(pr,M.preludeFraudEpoch);const pc=M.preludeFraudEpoch.challenge;const oldFood=parseInt(pc.oldCell10.slice(10,18),16),ef=await pr.expectedFoodAfterPrelude(1n,BigInt(pc.x),BigInt(pc.y),BigInt(oldFood));if(Number(ef)!==pc.goodPreludeFood)throw Error('prelude expected food');const pg=await pr.provePreludeCellFraud.estimateGas(1n,pc.oldCell10,pc.oldProof,pc.newCell10,pc.newProof),px=await pr.provePreludeCellFraud(1n,pc.oldCell10,pc.oldProof,pc.newCell10,pc.newProof,{gasLimit:pg+150000n}),pR=await px.wait(),pe=await pr.epochCommitment(1n);if(!pe.challenged)throw Error('prelude fraud not challenged');R.tests.preludeFraud={estimate:pg.toString(),used:pR.gasUsed.toString(),challenged:true,cellIndex:pc.cellIndex,goodFood:pc.goodPreludeFood,badFood:pc.badPreludeFood};
+            R.allRegistryGatesPass=true;fs.writeFileSync('registry-report.json',JSON.stringify(R,null,2));console.log(JSON.stringify(R,null,2));await g.disconnect();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          node test.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: genesis-v57-registry-compact-evidence
+          path: genesis-ci/regcompact/registry-report.json
