@@ -1,0 +1,23 @@
+name: Genesis v5.7 vector transport check
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'genesis-ci/vectors.part*'
+      - '.github/workflows/genesis-v57-vector-check.yml'
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact vector chunks
+        run: |
+          set -euo pipefail
+          sha256sum genesis-ci/vectors.part1 genesis-ci/vectors.part2 genesis-ci/vectors.part3
+          echo '4af720e5e9566fbe5f3a2cd5669886fac08c380257d3448119006cad744061c5  genesis-ci/vectors.part1' | sha256sum -c -
+          echo '32a62dffb6a3dea1d5e2d3dd51518668407a6d64e91780166ae444d3da345824  genesis-ci/vectors.part2' | sha256sum -c -
+          echo '9b99e212fbf32013ddbbc3616da96fa763ccc3f6986d15e7b29164d74f308299  genesis-ci/vectors.part3' | sha256sum -c -
+          cat genesis-ci/vectors.part1 genesis-ci/vectors.part2 genesis-ci/vectors.part3 | base64 -d | gzip -d > /tmp/vectors.json
+          echo '0cbf7f99c0fe4ad1901f15177f48f9aaf441838c73983460b3ac599a6bf206a0  /tmp/vectors.json' | sha256sum -c -
