@@ -1,0 +1,56 @@
+name: Genesis v5.7 repair transported vector chunk
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/genesis-v57-vector-repair.yml'
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: genesis-v57-ci
+      - name: Recover part3 against locked SHA256
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p=Path('genesis-ci/vectors.part3')
+          b=p.read_bytes()
+          target='9b99e212fbf32013ddbbc3616da96fa763ccc3f6986d15e7b29164d74f308299'
+          def h(x): return hashlib.sha256(x).hexdigest()
+          print('length',len(b),'current',h(b),'target',target)
+          if h(b)==target: raise SystemExit(0)
+          if h(b.rstrip(b'\n'))==target:
+              p.write_bytes(b.rstrip(b'\n')); print('fixed trailing newline'); raise SystemExit(0)
+          alphabet=b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+          work=bytearray(b)
+          found=None
+          for i,orig in enumerate(b):
+              for c in alphabet:
+                  if c==orig: continue
+                  work[i]=c
+                  if h(work)==target:
+                      found=(i,chr(orig),chr(c)); break
+              work[i]=orig
+              if found: break
+          if not found: raise SystemExit('not a single Base64 substitution')
+          i,old,new=found; work[i]=ord(new); p.write_bytes(work)
+          assert h(p.read_bytes())==target
+          print('repaired index',i,'from',old,'to',new)
+          PY
+          cat genesis-ci/vectors.part1 genesis-ci/vectors.part2 genesis-ci/vectors.part3 | base64 -d | gzip -d > /tmp/vectors.json
+          echo '0cbf7f99c0fe4ad1901f15177f48f9aaf441838c73983460b3ac599a6bf206a0  /tmp/vectors.json' | sha256sum -c -
+      - name: Commit repair to isolated branch
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- genesis-ci/vectors.part3; then exit 0; fi
+          git config user.name 'Genesis CI'
+          git config user.email 'genesis-ci@users.noreply.github.com'
+          git add genesis-ci/vectors.part3
+          git commit -m 'Repair transported v5.7 vector chunk'
+          git push origin HEAD:genesis-v57-ci
