@@ -1,0 +1,57 @@
+name: Genesis v5.7 EVM smoke gate
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/genesis-v57-evm-smoke.yml'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore bytecode and vectors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p genesis-ci/smoke && cd genesis-ci/smoke
+          gh api repos/Sprie/mygame/actions/artifacts/9318342721/zip > evidence.zip
+          echo 'c38b0441c35ebc5564ec3ed0df55af42e7cbbf0525a6ddaeb88a05fcf4753b96  evidence.zip' | sha256sum -c -
+          unzip -q evidence.zip -d evidence
+          cat ../vectors.part1 ../vectors.part2 ../vectors.part3 | base64 -d | gzip -d > vectors.json
+          echo '0cbf7f99c0fe4ad1901f15177f48f9aaf441838c73983460b3ac599a6bf206a0  vectors.json' | sha256sum -c -
+          npm init -y >/dev/null
+          npm install --no-save ethers@6 ganache@7 >/dev/null
+      - name: Seven exact Router calls
+        run: |
+          set -euo pipefail
+          cd genesis-ci/smoke
+          cat > smoke.cjs <<'JS'
+          const fs=require('fs');const ganache=require('ganache');const {ethers}=require('ethers');
+          const out=JSON.parse(fs.readFileSync('evidence/solc-output.json'));const vs=JSON.parse(fs.readFileSync('vectors.json'));
+          const PH='0x1ef4e6307109d90976b0bc757dc28b71efdf1c707d3032760dff73d1f220b621';
+          const A={NOOP:0n,DEATH:1n,FORAGE:2n,WANDER:3n,FLEE:4n,ATTACK:5n,MATE:6n};
+          function art(s,n){const c=out.contracts[s][n];return {abi:c.abi,bytecode:'0x'+c.evm.bytecode.object}}
+          function w(v){return [BigInt(v.seed),BigInt(v.epoch),BigInt(v.stepIndex),BigInt(v.nextUid),BigInt(v.freeHead),v.historyRoot,v.preSlotRoot,v.preCellRoot,v.preWorldRoot,v.localSlotsPacked,v.localCellsPacked,v.slotFrontierPacked,v.cellFrontierPacked]}
+          function eq(a,b,k){if(String(a).toLowerCase()!==String(b).toLowerCase())throw new Error(`${k}: ${a} != ${b}`)}
+          async function rev(p,k){try{await p;throw new Error(k+' succeeded')}catch(e){if(String(e.message).includes(' succeeded'))throw e}}
+          (async()=>{const gp=ganache.provider({logging:{quiet:true},miner:{blockGasLimit:120000000}});const p=new ethers.BrowserProvider(gp);const s=await p.getSigner();
+            async function dep(src,n,args=[]){const x=art(src,n);const c=await new ethers.ContractFactory(x.abi,x.bytecode,s).deploy(...args);await c.waitForDeployment();return c}
+            const m=await dep('GenesisMicrostepMovementModuleV57.sol','GenesisMicrostepMovementModuleV57');
+            const c=await dep('GenesisMicrostepCombatModuleV57.sol','GenesisMicrostepCombatModuleV57');
+            const t=await dep('GenesisMicrostepMateModuleV57.sol','GenesisMicrostepMateModuleV57');
+            const r=await dep('GenesisMicrostepAdjudicatorPackedV56.sol','GenesisMicrostepAdjudicatorPackedV56',[await m.getAddress(),await c.getAddress(),await t.getAddress()]);
+            const rows=[];for(const v of vs){const z=await r.evaluate(w(v),PH),e=v.expectedPost;eq(z[0],e.worldRoot,v.label+' world');eq(z[1],e.slotRoot,v.label+' slot');eq(z[2],e.cellRoot,v.label+' cell');eq(z[3],e.metaRoot,v.label+' meta');eq(z[4],BigInt(e.nextUid),v.label+' nextUid');eq(z[5],BigInt(e.freeHead),v.label+' freeHead');eq(z[6],e.historyRoot,v.label+' history');eq(z[7],BigInt(v.expectedSlot),v.label+' target');eq(z[8],A[v.actionObserved],v.label+' action');rows.push({label:v.label,action:v.actionObserved,world:z[0]})}
+            const b=vs.find(v=>v.label==='SUCCESSFUL_BIRTH');const bw=w(b);await rev(r.evaluate(bw,'0x'+'11'.repeat(32)),'bad protocol');const e=[...bw];e[1]++;await rev(r.evaluate(e,PH),'bad epoch');const q=[...bw];q[2]++;await rev(r.evaluate(q,PH),'bad step');const x=[...bw];let h=x[10].slice(2);x[10]='0x'+(h[0]==='0'?'1':'0')+h.slice(1);await rev(r.evaluate(x,PH),'bad cell');
+            const rep={allSevenExact:true,tamper4of4:true,rows};fs.writeFileSync('smoke-report.json',JSON.stringify(rep,null,2));console.log(JSON.stringify(rep,null,2));
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          node smoke.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: genesis-v57-evm-smoke-evidence
+          path: genesis-ci/smoke/smoke-report.json
